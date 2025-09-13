@@ -1,49 +1,69 @@
 `default_nettype none
-`timescale 1ns / 1ps
-
-/* This testbench just instantiates the module and makes some convenient wires
-   that can be driven / tested by the cocotb test.py.
-*/
-module tb ();
-
-  // Dump the signals to a VCD file. You can view it with gtkwave or surfer.
-  initial begin
-    $dumpfile("tb.vcd");
-    $dumpvars(0, tb);
-    #1;
-  end
-
-  // Wire up the inputs and outputs:
-  reg clk;
-  reg rst_n;
-  reg ena;
-  reg [7:0] ui_in;
-  reg [7:0] uio_in;
-  wire [7:0] uo_out;
-  wire [7:0] uio_out;
-  wire [7:0] uio_oe;
-`ifdef GL_TEST
-  wire VPWR = 1'b1;
-  wire VGND = 1'b0;
-`endif
-
-  // Replace tt_um_example with your module name:
-  tt_um_example user_project (
-
-      // Include power ports for the Gate Level test:
-`ifdef GL_TEST
-      .VPWR(VPWR),
-      .VGND(VGND),
-`endif
-
-      .ui_in  (ui_in),    // Dedicated inputs
-      .uo_out (uo_out),   // Dedicated outputs
-      .uio_in (uio_in),   // IOs: Input path
-      .uio_out(uio_out),  // IOs: Output path
-      .uio_oe (uio_oe),   // IOs: Enable path (active high: 0=input, 1=output)
-      .ena    (ena),      // enable - goes high when design is selected
-      .clk    (clk),      // clock
-      .rst_n  (rst_n)     // not reset
-  );
-
+`timescale 1ns/1ps
+module tb_secdec_fifo_arq;
+ reg clk = 0;
+ always #5 clk = ~clk;
+ reg rst;
+ reg wr_en;
+ reg rd_en;
+ reg [7:0] data_in;
+ reg [1:0] err_mode;
+ wire [7:0] data_out;
+ wire ack, nack;
+ secdec_fifo_arq #(.DATA_WIDTH(8), .FIFO_DEPTH(4)) dut (
+ .clk(clk), .rst(rst),
+ .wr_en(wr_en), .data_in(data_in),
+ .rd_en(rd_en), .data_out(data_out),
+ .ack(ack), .nack(nack),
+ .err_mode(err_mode)
+ );
+ task write_word(input [7:0] w);
+ begin
+ @(posedge clk);
+ data_in <= w; wr_en <= 1'b1;
+ @(posedge clk);
+ wr_en <= 1'b0;
+ end
+ endtask
+ task read_with_arq(input [7:0] last_sent);
+ begin
+ @(posedge clk);
+ rd_en <= 1'b1;
+ @(posedge clk);
+ rd_en <= 1'b0;
+ // wait two cycles for registered ack/nack
+ @(posedge clk);
+ @(posedge clk);
+ if (nack) begin
+ $display("[%0t] NACK observed for 0x%0h -> retransmit clean", $time, last_sent);
+ err_mode <= 2'b00;
+ write_word(last_sent);
+ @(posedge clk);
+ rd_en <= 1'b1;
+ @(posedge clk);
+ rd_en <= 1'b0;
+ @(posedge clk); @(posedge clk);
+ if (ack) $display("[%0t] Retransmit ACK OK 0x%0h", $time, data_out);
+ end
+ else if (ack) begin
+ $display("[%0t] ACK OK 0x%0h", $time, data_out);
+ end
+ end
+ endtask
+ initial begin
+ $dumpfile("secdec_fifo_arq.vcd");
+ $dumpvars(0, tb_secdec_fifo_arq);
+ rst = 1; wr_en = 0; rd_en = 0; data_in = 8'h00; err_mode = 2'b00;
+ #20 rst = 0;
+ write_word(8'hA5);
+ err_mode <= 2'b00;
+ read_with_arq(8'hA5);
+ write_word(8'h3C);
+ err_mode <= 2'b01;
+ read_with_arq(8'h3C);
+ write_word(8'h5A);
+ err_mode <= 2'b10;
+ read_with_arq(8'h5A);
+ #50 $finish;
+ end
 endmodule
